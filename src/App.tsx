@@ -70,7 +70,6 @@ function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
     setIsSubmitting(true);
     setSubmitProgress(0);
 
@@ -112,19 +111,19 @@ function App() {
       await addDoc(collection(db, 'interviews'), interviewData);
       setIsSubmitting(false);
       setSubmitProgress(100);
-      alert('Interview erfolgreich gespeichert!');
     } catch (error) {
       console.error('Error saving interview:', error);
       setIsSubmitting(false);
-      alert('Fehler beim Speichern des Interviews. Bitte versuchen Sie es erneut.');
     }
   };
 
+  // Überprüfen, ob alle Fragen beantwortet wurden
   const allQuestionsAnswered = questions.every((_, index) => {
     const answer = answers[`q${index}`];
     return answer && (answer.textAnswer.trim() !== '' || answer.audioAnswers.length > 0);
   });
 
+  // Überprüfen, ob alle persönlichen Informationen ausgefüllt sind
   const personalInfoComplete = Object.values(personalInfo).every(value => value.trim() !== '');
 
   return (
@@ -150,7 +149,6 @@ function App() {
                 name="name"
                 value={personalInfo.name}
                 onChange={handlePersonalInfoChange}
-                required
                 className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
@@ -161,7 +159,6 @@ function App() {
                 name="company"
                 value={personalInfo.company}
                 onChange={handlePersonalInfoChange}
-                required
                 className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
@@ -172,7 +169,6 @@ function App() {
                 name="position"
                 value={personalInfo.position}
                 onChange={handlePersonalInfoChange}
-                required
                 className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
@@ -189,7 +185,7 @@ function App() {
 
           <div className="flex flex-col items-center mt-4">
             <p className="text-sm text-gray-600 mb-4">
-              Mit dem einreichen stimmen Sie den{' '}
+              Mit dem Einreichen stimmen Sie den{' '}
               <a
                 href="https://magic-pick-c90.notion.site/Datenschutzerkl-rung-13d59a25da4680a19b3cdbb8e1cc850b?pvs=4"
                 target="_blank"
