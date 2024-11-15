@@ -1,18 +1,10 @@
 import React, { useState } from 'react';
-import { ChevronUp } from 'lucide-react';
-import { saveInterview } from './services/firebase';
 import QuestionItem from './components/QuestionItem';
-import ProgressBar from './components/ProgressBar';
 import SubmitButton from './components/SubmitButton';
-
-interface Answer {
-  textAnswer: string;
-  audioAnswer: Blob | null;
-}
-
-interface Answers {
-  [key: string]: Answer;
-}
+import ProgressBar from './components/ProgressBar';
+import { db, storage } from './lib/firebase';
+import { collection, addDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const questions = [
   "Hier steht Frage 1?",
@@ -27,115 +19,113 @@ const questions = [
   "Hier steht Frage 10?",
 ];
 
+interface Answer {
+  textAnswer: string;
+  audioAnswers: Blob[];
+}
+
 function App() {
-  const [answers, setAnswers] = useState<Answers>({});
+  const [answers, setAnswers] = useState<Record<string, Answer>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [showScrollTop, setShowScrollTop] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitProgress, setSubmitProgress] = useState(0);
-  const [isPrivacyChecked, setIsPrivacyChecked] = useState(false); // Checkbox state
+  const [personalInfo, setPersonalInfo] = useState({
+    name: '',
+    company: '',
+    position: ''
+  });
 
-  const handleScroll = () => {
-    setShowScrollTop(window.scrollY > 400);
-  };
-
-  React.useEffect(() => {
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  const scrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleAnswerChange = (id: string, textAnswer: string, audioAnswer: Blob | null) => {
-    setAnswers(prev => ({
-      ...prev,
-      [id]: { textAnswer, audioAnswer }
+  const handleAnswerChange = (id: string, textAnswer: string, audioAnswers: Blob[]) => {
+    setAnswers((prevAnswers) => ({
+      ...prevAnswers,
+      [id]: { textAnswer, audioAnswers }
     }));
-    setSubmitError(null);
+  };
+
+  const handlePersonalInfoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setPersonalInfo((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
   };
 
   const calculateProgress = () => {
     const totalQuestions = questions.length;
     const answeredQuestions = Object.values(answers).filter(
-      answer => answer.textAnswer.trim() !== '' || answer.audioAnswer !== null
+      answer => answer.textAnswer.trim() !== '' || answer.audioAnswers.length > 0
     ).length;
     return (answeredQuestions / totalQuestions) * 100;
   };
 
+  const uploadAudio = async (blob: Blob, path: string) => {
+    const storageRef = ref(storage, path);
+    await uploadBytes(storageRef, blob, {
+      contentType: 'audio/webm',
+      customMetadata: {
+        timeCreated: new Date().toISOString(),
+      },
+    });
+    return getDownloadURL(storageRef);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitError(null);
-    setSubmitProgress(0);
-
-    // Ensure all questions have either text or audio answer
-    const allQuestionsAnswered = questions.every((_, index) => {
-      const answer = answers[`q${index}`];
-      return answer && (answer.textAnswer.trim() !== '' || answer.audioAnswer !== null);
-    });
-
-    if (!allQuestionsAnswered) {
-      setSubmitError('Bitte beantworten Sie jede Frage entweder per Text oder Audio.');
-      return;
-    }
-
-    // Ensure the privacy policy checkbox is checked
-    if (!isPrivacyChecked) {
-      setSubmitError('Bitte stimmen Sie den Datenschutzbestimmungen zu, um fortzufahren.');
-      return;
-    }
 
     setIsSubmitting(true);
+    setSubmitProgress(0);
 
     try {
-      const totalAudioFiles = Object.values(answers).filter(a => a.audioAnswer).length;
-      let uploadedFiles = 0;
+      const timestamp = new Date().toISOString();
+      const audioUrls: Record<string, string[]> = {};
 
-      const progressCallback = () => {
-        uploadedFiles++;
-        const progress = totalAudioFiles > 0 
-          ? (uploadedFiles / totalAudioFiles) * 100 
-          : 100;
-        setSubmitProgress(progress);
-      };
-
-      if (totalAudioFiles === 0) {
-        setSubmitProgress(50);
+      for (const [questionId, answer] of Object.entries(answers)) {
+        if (answer.audioAnswers.length > 0) {
+          const urls = await Promise.all(
+            answer.audioAnswers.map((audioBlob, i) =>
+              uploadAudio(audioBlob, `interviews/${timestamp}/${questionId}_audio${i + 1}.webm`)
+            )
+          );
+          audioUrls[questionId] = urls;
+        }
       }
 
-      await saveInterview(answers, questions, progressCallback);
+      const interviewData = {
+        personalInfo,
+        timestamp,
+        submittedAt: new Date(),
+        answers: Object.entries(answers).map(([questionId, answer], index) => ({
+          questionId,
+          questionText: questions[index],
+          textAnswer: answer.textAnswer.trim(),
+          audioUrls: audioUrls[questionId] || [],
+          hasAudio: (audioUrls[questionId] || []).length > 0,
+        })),
+        metadata: {
+          totalQuestions: questions.length,
+          answeredQuestions: Object.values(answers).filter(
+            answer => answer.textAnswer.trim() !== '' || answer.audioAnswers.length > 0
+          ).length,
+          questionsWithAudio: Object.keys(audioUrls).length,
+        },
+      };
 
-      setSubmitProgress(100);
-      setSubmitted(true);
-    } catch (error) {
-      console.error('Error submitting interview:', error);
-      setSubmitError(
-        error instanceof Error 
-          ? error.message 
-          : 'Beim Absenden des Formulars ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.'
-      );
-      setSubmitProgress(0);
-    } finally {
+      await addDoc(collection(db, 'interviews'), interviewData);
       setIsSubmitting(false);
+      setSubmitProgress(100);
+      alert('Interview erfolgreich gespeichert!');
+    } catch (error) {
+      console.error('Error saving interview:', error);
+      setIsSubmitting(false);
+      alert('Fehler beim Speichern des Interviews. Bitte versuchen Sie es erneut.');
     }
   };
 
-  if (submitted) {
-    return (
-      <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-3xl mx-auto text-center">
-          <div className="bg-white rounded-xl shadow-sm p-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">Vielen Dank!</h2>
-            <p className="text-gray-600">
-              Ihre Antworten auf das Experteninterview wurden erfolgreich übermittelt und gespeichert. Wir wissen Ihre Zeit und Ihre Erkenntnisse sehr zu schätzen.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const allQuestionsAnswered = questions.every((_, index) => {
+    const answer = answers[`q${index}`];
+    return answer && (answer.textAnswer.trim() !== '' || answer.audioAnswers.length > 0);
+  });
+
+  const personalInfoComplete = Object.values(personalInfo).every(value => value.trim() !== '');
 
   return (
     <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -151,6 +141,43 @@ function App() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-4 bg-white p-6 rounded-lg shadow-sm">
+            <h2 className="text-lg font-medium text-gray-900">Persönliche Informationen</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Vor- und Nachname</label>
+              <input
+                type="text"
+                name="name"
+                value={personalInfo.name}
+                onChange={handlePersonalInfoChange}
+                required
+                className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Unternehmen</label>
+              <input
+                type="text"
+                name="company"
+                value={personalInfo.company}
+                onChange={handlePersonalInfoChange}
+                required
+                className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Position</label>
+              <input
+                type="text"
+                name="position"
+                value={personalInfo.position}
+                onChange={handlePersonalInfoChange}
+                required
+                className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+          </div>
+
           {questions.map((question, index) => (
             <QuestionItem
               key={index}
@@ -161,57 +188,28 @@ function App() {
           ))}
 
           <div className="flex flex-col items-center mt-4">
-            <div className="flex items-center justify-center space-x-2 mb-4">
-              <input
-                type="checkbox"
-                id="privacyCheck"
-                checked={isPrivacyChecked}
-                onChange={() => setIsPrivacyChecked(!isPrivacyChecked)}
-                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <label htmlFor="privacyCheck" className="text-sm text-gray-600">
-                Ich stimme den{' '}
-                <a
-                  href="https://magic-pick-c90.notion.site/Datenschutzerkl-rung-13d59a25da4680a19b3cdbb8e1cc850b?pvs=4"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 underline"
-                >
-                  Datenschutzbestimmungen
-                </a>{' '}
-                zu.
-              </label>
-            </div>
-
-            <SubmitButton 
+            <p className="text-sm text-gray-600 mb-4">
+              Mit dem einreichen stimmen Sie den{' '}
+              <a
+                href="https://magic-pick-c90.notion.site/Datenschutzerkl-rung-13d59a25da4680a19b3cdbb8e1cc850b?pvs=4"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 underline"
+              >
+                Datenschutzbestimmungen
+              </a>{' '}
+              zu.
+            </p>
+            <SubmitButton
               isSubmitting={isSubmitting}
               progress={submitProgress}
+              disabled={!allQuestionsAnswered || !personalInfoComplete}
             />
-
-            {submitError && (
-              <div className="absolute bottom-full mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm w-full text-center shadow-md">
-                {submitError}
-              </div>
-            )}
           </div>
         </form>
-
-        {showScrollTop && (
-          <button
-            onClick={scrollToTop}
-            className="fixed bottom-8 right-8 p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors"
-            aria-label="Scroll to top"
-          >
-            <ChevronUp className="w-6 h-6" />
-          </button>
-        )}
       </div>
     </div>
   );
 }
 
 export default App;
-
-
-
-
