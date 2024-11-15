@@ -16,9 +16,7 @@ export default function AudioRecorder({ onRecordingComplete, questionId }: Audio
     try {
       setIsPreparing(true);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      // Versuche, ein besser unterstütztes Format zu verwenden
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      mediaRecorderRef.current = new MediaRecorder(stream);
       chunksRef.current = [];
 
       mediaRecorderRef.current.ondataavailable = (e) => {
